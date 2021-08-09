@@ -193,6 +193,32 @@ ssize_t ktd2692_store(struct device *dev,
 			gpio_free(global_ktd2692data->flash_control);
 			LED_INFO("KTD2692-TORCH ON. : X(%d)\n", value);
 		}
+static void regulator_disable_action(void *_data)
+{
+	struct device *dev = _data;
+	struct ktd2692_context *led = dev_get_drvdata(dev);
+	int ret;
+
+	ret = regulator_disable(led->regulator);
+	if (ret)
+		dev_err(dev, "Failed to disable supply: %d\n", ret);
+}
+
+static int ktd2692_parse_dt(struct ktd2692_context *led, struct device *dev,
+			    struct ktd2692_led_config_data *cfg)
+{
+	struct device_node *np = dev->of_node;
+	struct device_node *child_node;
+	int ret;
+
+	if (!dev->of_node)
+		return -ENXIO;
+
+	led->ctrl_gpio = devm_gpiod_get(dev, "ctrl", GPIOD_ASIS);
+	ret = PTR_ERR_OR_ZERO(led->ctrl_gpio);
+	if (ret) {
+		dev_err(dev, "cannot get ctrl-gpios %d\n", ret);
+		return ret;
 	}
 
 	if (!IS_ERR(pinctrl))
@@ -206,6 +232,17 @@ ssize_t ktd2692_show(struct device *dev,
 {
 	return sprintf(buf, "%d\n", global_ktd2692data->sysfs_input_data);
 }
+	if (led->regulator) {
+		ret = regulator_enable(led->regulator);
+		if (ret) {
+			dev_err(dev, "Failed to enable supply: %d\n", ret);
+		} else {
+			ret = devm_add_action_or_reset(dev,
+						regulator_disable_action, dev);
+			if (ret)
+				return ret;
+		}
+	}
 
 #ifdef CONFIG_LEDS_KTD2692_MULTI_TORCH_REAR3
 static DEVICE_ATTR(rear_flash3, S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH,
@@ -323,6 +360,7 @@ static void ktd2692_shutdown(struct device *dev)
 	int ret = 0;
 	unsigned long flags = 0;
 	struct pinctrl *pinctrl;
+	struct ktd2692_context *led = platform_get_drvdata(pdev);
 
 	ret = gpio_request(global_ktd2692data->flash_control, "ktd2692_led_control");
 	if (ret) {
@@ -345,6 +383,7 @@ static void ktd2692_shutdown(struct device *dev)
 	if (IS_ERR(pinctrl))
 		pr_err("%s: flash %s pins are not configured\n", __func__, "idle");
 }
+	mutex_destroy(&led->lock);
 
 //static int __devexit ktd2692_remove(struct platform_device *pdev)
 static int ktd2692_remove(struct platform_device *pdev)
